@@ -52,7 +52,7 @@ SECRET_KEY = SECRET_KEY.encode()
 # ===============================
 # CONSTANTS
 # ===============================
-CHUNK_SIZE = 200_000  # ~200 KB per chunk (SAFE)
+CHUNK_SIZE = 10_000  # ~200 KB per chunk (SAFE)
 
 # ===============================
 # HELPERS
