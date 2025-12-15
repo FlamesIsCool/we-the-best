@@ -50,6 +50,11 @@ if not SECRET_KEY:
 SECRET_KEY = SECRET_KEY.encode()
 
 # ===============================
+# CONSTANTS
+# ===============================
+CHUNK_SIZE = 200_000  # ~200 KB per chunk (SAFE)
+
+# ===============================
 # HELPERS
 # ===============================
 def generate_id():
@@ -60,37 +65,59 @@ def generate_token():
 
 def roblox_only(req):
     ua = (req.headers.get("User-Agent") or "").lower()
-
     blocked = [
         "curl", "wget", "python", "requests",
         "powershell", "httpclient", "java",
         "node", "httpx", "aiohttp"
     ]
-
     if any(b in ua for b in blocked):
         return False
-
     return ua.startswith("roblox")
 
 # ===============================
-# DATABASE HELPERS (FIRESTORE)
+# DATABASE HELPERS (CHUNKING)
 # ===============================
 def save_script(script_id, script, token):
+    chunks = [script[i:i+CHUNK_SIZE] for i in range(0, len(script), CHUNK_SIZE)]
+
+    # metadata document
     db.collection("scripts").document(script_id).set({
-        "script": script,
+        "chunk_count": len(chunks),
         "token": token,
         "created_at": int(time.time())
     })
 
+    # chunk subcollection
+    for index, chunk in enumerate(chunks):
+        db.collection("scripts") \
+          .document(script_id) \
+          .collection("chunks") \
+          .document(str(index)) \
+          .set({"data": chunk})
+
 def get_script(script_id):
-    doc = db.collection("scripts").document(script_id).get()
-    if not doc.exists:
+    meta = db.collection("scripts").document(script_id).get()
+    if not meta.exists:
         return None
 
-    data = doc.to_dict()
+    meta_data = meta.to_dict()
+    chunk_count = meta_data["chunk_count"]
+    token = meta_data["token"]
+
+    parts = []
+    for i in range(chunk_count):
+        doc = db.collection("scripts") \
+                .document(script_id) \
+                .collection("chunks") \
+                .document(str(i)) \
+                .get()
+        if not doc.exists:
+            return None
+        parts.append(doc.to_dict()["data"])
+
     return {
-        "content": data["script"],
-        "token": data["token"]
+        "content": "".join(parts),
+        "token": token
     }
 
 # ===============================
@@ -129,11 +156,7 @@ def signed(script_id):
     ts = str(int(time.time()))
     msg = f"{script_id}{ts}".encode()
 
-    sig = hmac.new(
-        SECRET_KEY,
-        msg,
-        hashlib.sha256
-    ).hexdigest()
+    sig = hmac.new(SECRET_KEY, msg, hashlib.sha256).hexdigest()
 
     raw_url = (
         f"https://luadec.net/raw/{script_id}"
@@ -173,11 +196,7 @@ def raw(script_id):
         return Response("Expired request", status=403)
 
     msg = f"{script_id}{ts}".encode()
-    expected = hmac.new(
-        SECRET_KEY,
-        msg,
-        hashlib.sha256
-    ).hexdigest()
+    expected = hmac.new(SECRET_KEY, msg, hashlib.sha256).hexdigest()
 
     if not hmac.compare_digest(expected, sig):
         return Response("Invalid signature", status=403)
@@ -195,7 +214,7 @@ def raw(script_id):
 # ===============================
 @app.route("/")
 def index():
-    return "LuaDec backend running (Firebase, single-file)"
+    return "LuaDec backend running (Firestore chunking)"
 
 # ===============================
 # STARTUP
