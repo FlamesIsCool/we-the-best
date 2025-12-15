@@ -5,6 +5,23 @@ import hmac
 import hashlib
 import time
 import os
+import json
+
+# ===============================
+# FIREBASE SETUP (INLINE)
+# ===============================
+import firebase_admin
+from firebase_admin import credentials, firestore
+
+if not firebase_admin._apps:
+    cred_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+    if not cred_json:
+        raise RuntimeError("FIREBASE_SERVICE_ACCOUNT is not set")
+
+    cred = credentials.Certificate(json.loads(cred_json))
+    firebase_admin.initialize_app(cred)
+
+db = firestore.client()
 
 # ===============================
 # APP SETUP
@@ -33,11 +50,6 @@ if not SECRET_KEY:
 SECRET_KEY = SECRET_KEY.encode()
 
 # ===============================
-# FIREBASE
-# ===============================
-from firebase import db
-
-# ===============================
 # HELPERS
 # ===============================
 def generate_id():
@@ -61,7 +73,7 @@ def roblox_only(req):
     return ua.startswith("roblox")
 
 # ===============================
-# DATABASE HELPERS
+# DATABASE HELPERS (FIRESTORE)
 # ===============================
 def save_script(script_id, script, token):
     db.collection("scripts").document(script_id).set({
@@ -183,7 +195,7 @@ def raw(script_id):
 # ===============================
 @app.route("/")
 def index():
-    return "LuaDec backend running (Firebase)"
+    return "LuaDec backend running (Firebase, single-file)"
 
 # ===============================
 # STARTUP
