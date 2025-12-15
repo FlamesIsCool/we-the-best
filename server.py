@@ -1,5 +1,6 @@
 from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
+from flask import send_from_directory
 import secrets
 import hmac
 import hashlib
@@ -193,9 +194,13 @@ def raw(script_id):
 # ===============================
 # HEALTH CHECK
 # ===============================
+
 @app.route("/")
-def index():
-    return "LuaDec backend running (simple Firestore)"
+def website():
+    ua = (request.headers.get("User-Agent") or "").lower()
+    if ua.startswith("roblox"):
+        return Response("Not Found", status=404)
+    return send_from_directory(".", "index.html")
 
 # ===============================
 # STARTUP
