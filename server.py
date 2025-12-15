@@ -5,7 +5,6 @@ import hmac
 import hashlib
 import time
 import os
-import sqlite3
 
 # ===============================
 # APP SETUP
@@ -34,41 +33,9 @@ if not SECRET_KEY:
 SECRET_KEY = SECRET_KEY.encode()
 
 # ===============================
-# DATABASE
+# FIREBASE
 # ===============================
-DB_PATH = "scripts.db"
-
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS scripts (
-                id TEXT PRIMARY KEY,
-                script TEXT NOT NULL,
-                token TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            )
-        """)
-
-def save_script(script_id, script, token):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            "INSERT INTO scripts (id, script, token, created_at) VALUES (?, ?, ?, ?)",
-            (script_id, script, token, int(time.time()))
-        )
-
-def get_script(script_id):
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
-            "SELECT script, token FROM scripts WHERE id = ?",
-            (script_id,)
-        )
-        row = cur.fetchone()
-        if not row:
-            return None
-        return {
-            "content": row[0],
-            "token": row[1]
-        }
+from firebase import db
 
 # ===============================
 # HELPERS
@@ -92,6 +59,27 @@ def roblox_only(req):
         return False
 
     return ua.startswith("roblox")
+
+# ===============================
+# DATABASE HELPERS
+# ===============================
+def save_script(script_id, script, token):
+    db.collection("scripts").document(script_id).set({
+        "script": script,
+        "token": token,
+        "created_at": int(time.time())
+    })
+
+def get_script(script_id):
+    doc = db.collection("scripts").document(script_id).get()
+    if not doc.exists:
+        return None
+
+    data = doc.to_dict()
+    return {
+        "content": data["script"],
+        "token": data["token"]
+    }
 
 # ===============================
 # API: UPLOAD SCRIPT
@@ -195,12 +183,11 @@ def raw(script_id):
 # ===============================
 @app.route("/")
 def index():
-    return "LuaDec backend running"
+    return "LuaDec backend running (Firebase)"
 
 # ===============================
 # STARTUP
 # ===============================
 if __name__ == "__main__":
-    init_db()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
