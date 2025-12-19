@@ -102,13 +102,14 @@ def create_workink_link(script_id):
     if data.get("error"):
         raise RuntimeError(f"Work.ink error: {data}")
 
-    try:
-        return data["response"]["url"]
-    except KeyError:
-        raise RuntimeError(f"Unexpected Work.ink response: {data}")
+    return data["response"]["url"]
 
 def validate_workink_token(token, user_ip):
-    response = requests.get(WORKINK_VALIDATE_URL.format(token), timeout=10)
+    response = requests.get(
+        WORKINK_VALIDATE_URL.format(token),
+        timeout=10
+    )
+
     data = response.json()
 
     if not data.get("valid"):
@@ -121,11 +122,11 @@ def validate_workink_token(token, user_ip):
     return True
 
 # ==========================================================
-# STORAGE
+# STORAGE (KEEP FIELD NAME = script)
 # ==========================================================
-def save_script(script_id, code, internal_token, workink_url):
+def save_script(script_id, script_text, internal_token, workink_url):
     db.collection(SCRIPTS_COLLECTION).document(script_id).set({
-        "code": code,
+        "script": script_text,  # <-- DO NOT CHANGE THIS
         "token": internal_token,
         "workink": workink_url,
         "created_at": int(time.time())
@@ -141,9 +142,9 @@ def get_script(script_id):
 @app.route("/api/upload", methods=["POST"])
 def upload():
     body = request.get_json(silent=True) or {}
-    script_code = body.get("script")
+    script_text = body.get("script")
 
-    if not script_code or not isinstance(script_code, str):
+    if not script_text or not isinstance(script_text, str):
         return jsonify({"error": "INVALID_SCRIPT"}), 400
 
     script_id = gen_script_id()
@@ -151,7 +152,7 @@ def upload():
 
     workink_url = create_workink_link(script_id)
 
-    save_script(script_id, script_code, internal_token, workink_url)
+    save_script(script_id, script_text, internal_token, workink_url)
 
     return jsonify({
         "success": True,
@@ -161,7 +162,7 @@ def upload():
     })
 
 # ==========================================================
-# WORK.INK CALLBACK (KEY ISSUE)
+# WORK.INK CALLBACK (ISSUE KEY)
 # ==========================================================
 @app.route("/workink/consume")
 def workink_consume():
@@ -170,10 +171,10 @@ def workink_consume():
     user_ip = request.remote_addr
 
     if not token or not script_id:
-        return Response("Invalid request", status=400)
+        return Response("Invalid request", 400)
 
     if not validate_workink_token(token, user_ip):
-        return Response("Invalid token", status=403)
+        return Response("Invalid token", 403)
 
     key = gen_key()
 
@@ -310,7 +311,7 @@ def signed(script_id):
     )
 
 # ==========================================================
-# RAW
+# RAW (USES script FIELD — NO CHANGES)
 # ==========================================================
 @app.route("/raw/<script_id>")
 def raw(script_id):
@@ -348,7 +349,7 @@ def raw(script_id):
     if not is_roblox_request(request):
         return Response("Forbidden", 403)
 
-    return Response(script["code"], mimetype="text/plain")
+    return Response(script["script"], mimetype="text/plain")
 
 # ==========================================================
 # START
