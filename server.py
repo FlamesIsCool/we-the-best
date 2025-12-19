@@ -70,7 +70,7 @@ def create_workink_link(script_id):
         f"?script_id={script_id}&token={{TOKEN}}"
     )
 
-    res = requests.post(
+    response = requests.post(
         WORKINK_CREATE_URL,
         headers={
             "X-Api-Key": WORKINK_API_KEY,
@@ -78,12 +78,29 @@ def create_workink_link(script_id):
         },
         json={
             "title": f"Lume Script {script_id}",
-            "destination": destination
-        }
+            "destination": destination,
+            "link_description": "Lume protected script access"
+        },
+        timeout=10
     )
 
-    res.raise_for_status()
-    return res.json()["url"]
+    try:
+        data = response.json()
+    except Exception:
+        raise RuntimeError(f"Work.ink returned invalid JSON: {response.text}")
+
+    # 🔴 Handle Work.ink error properly
+    if response.status_code != 200 or data.get("error"):
+        raise RuntimeError(
+            f"Work.ink error ({response.status_code}): {data}"
+        )
+
+    # ✅ Success
+    if "url" not in data:
+        raise RuntimeError(f"Work.ink response missing url: {data}")
+
+    return data["url"]
+
 
 def validate_workink_token(token, user_ip):
     res = requests.get(WORKINK_VALIDATE_URL.format(token))
