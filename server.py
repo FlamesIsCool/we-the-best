@@ -84,22 +84,18 @@ def create_workink_link(script_id):
         timeout=10
     )
 
+    data = response.json()
+
+    # ❌ API-level error
+    if data.get("error"):
+        raise RuntimeError(f"Work.ink API error: {data}")
+
+    # ✅ Correct location of the URL
     try:
-        data = response.json()
-    except Exception:
-        raise RuntimeError(f"Work.ink returned invalid JSON: {response.text}")
+        return data["response"]["url"]
+    except KeyError:
+        raise RuntimeError(f"Unexpected Work.ink response: {data}")
 
-    # 🔴 Handle Work.ink error properly
-    if response.status_code != 200 or data.get("error"):
-        raise RuntimeError(
-            f"Work.ink error ({response.status_code}): {data}"
-        )
-
-    # ✅ Success
-    if "url" not in data:
-        raise RuntimeError(f"Work.ink response missing url: {data}")
-
-    return data["url"]
 
 
 def validate_workink_token(token, user_ip):
