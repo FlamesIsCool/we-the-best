@@ -3,7 +3,7 @@ from flask_cors import CORS
 import secrets, hmac, hashlib, time, os, json, requests
 
 # ===============================
-# FIREBASE SETUP
+# FIREBASE
 # ===============================
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -19,7 +19,7 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 # ===============================
-# APP SETUP
+# APP
 # ===============================
 app = Flask(__name__)
 CORS(app)
@@ -49,7 +49,7 @@ def gen_token():
 def gen_key():
     return secrets.token_urlsafe(12)
 
-def hash_key(key: str) -> str:
+def hash_key(key: str):
     return hashlib.sha256(key.encode()).hexdigest()
 
 def roblox_only(req):
@@ -60,7 +60,7 @@ def roblox_only(req):
     return not any(b in ua for b in blocked)
 
 # ===============================
-# LOOTLABS (SAFE)
+# LOOTLABS (ROBUST)
 # ===============================
 def create_lootlabs_link(script_id: str):
     try:
@@ -71,7 +71,7 @@ def create_lootlabs_link(script_id: str):
                 "Content-Type": "application/json"
             },
             json={
-                "title": f"Luadec Script {script_id}",
+                "title": f"LuaDec Script {script_id}",
                 "url": f"https://luadec.net/key/{script_id}",
                 "tier_id": 2,
                 "number_of_tasks": 3,
@@ -81,14 +81,14 @@ def create_lootlabs_link(script_id: str):
         )
 
         data = r.json()
-        print("LootLabs response:", data)
+        print("LootLabs:", data)
 
         msg = data.get("message")
 
         if isinstance(msg, dict):
             return msg.get("loot_url")
 
-        if isinstance(msg, list) and len(msg) > 0:
+        if isinstance(msg, list) and msg:
             return msg[0].get("loot_url")
 
     except Exception as e:
@@ -97,7 +97,7 @@ def create_lootlabs_link(script_id: str):
     return None
 
 # ===============================
-# API: UPLOAD SCRIPT
+# API: UPLOAD
 # ===============================
 @app.route("/api/upload", methods=["POST"])
 def upload():
@@ -127,7 +127,8 @@ def upload():
         "success": True,
         "script_id": script_id,
         "loader": loader,
-        "lootlabs": loot_url
+        "lootlabs": loot_url,
+        "key": raw_key
     })
 
 # ===============================
@@ -160,46 +161,39 @@ def key_page(script_id):
     if not doc.exists:
         return Response("Invalid key link.", status=404)
 
-    return f"""
+    return """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>LuaDec Key Unlocked</title>
-    <style>
-        body {{
-            background: #0f0f0f;
-            color: white;
-            font-family: Arial, sans-serif;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-        }}
-        .box {{
-            background: #151515;
-            padding: 32px;
-            border-radius: 14px;
-            width: 420px;
-            text-align: center;
-            box-shadow: 0 0 40px rgba(0,0,0,0.6);
-        }}
-        h1 {{
-            margin-bottom: 12px;
-        }}
-        p {{
-            opacity: 0.85;
-            line-height: 1.5;
-        }}
-    </style>
+<title>LuaDec Key</title>
+<style>
+body {
+    background:#0f0f0f;
+    color:white;
+    font-family:Arial,sans-serif;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    height:100vh;
+    margin:0;
+}
+.box {
+    background:#151515;
+    padding:32px;
+    border-radius:14px;
+    width:420px;
+    text-align:center;
+}
+p { opacity:.85; }
+</style>
 </head>
 <body>
-    <div class="box">
-        <h1>✅ Key Unlocked</h1>
-        <p>Your key has been successfully unlocked.</p>
-        <p><b>Return to Roblox</b> and paste your key into the LuaDec key window.</p>
-        <p>You may now close this page.</p>
-    </div>
+<div class="box">
+<h1>✅ Key Unlocked</h1>
+<p>Your key has been unlocked successfully.</p>
+<p>Return to Roblox and paste the key into the LuaDec window.</p>
+<p>You may now close this page.</p>
+</div>
 </body>
 </html>
 """
@@ -233,33 +227,28 @@ local Players = game:GetService("Players")
 local player = Players.LocalPlayer
 local SCRIPT_ID = "{script_id}"
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "LuadecKeySystem"
-gui.Parent = player.PlayerGui
+local gui = Instance.new("ScreenGui", player.PlayerGui)
+gui.Name = "LuaDecKeySystem"
 
 local frame = Instance.new("Frame", gui)
 frame.Size = UDim2.fromScale(0.35, 0.25)
 frame.Position = UDim2.fromScale(0.5, 0.5)
 frame.AnchorPoint = Vector2.new(0.5, 0.5)
-frame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-frame.BorderSizePixel = 0
+frame.BackgroundColor3 = Color3.fromRGB(15,15,15)
 
 local box = Instance.new("TextBox", frame)
 box.Size = UDim2.fromScale(0.85, 0.3)
 box.Position = UDim2.fromScale(0.075, 0.35)
 box.PlaceholderText = "Enter Key"
-box.Text = ""
 box.TextColor3 = Color3.new(1,1,1)
 box.BackgroundColor3 = Color3.fromRGB(25,25,25)
-box.BorderSizePixel = 0
 
 local btn = Instance.new("TextButton", frame)
 btn.Size = UDim2.fromScale(0.4, 0.25)
 btn.Position = UDim2.fromScale(0.3, 0.7)
 btn.Text = "Verify"
-btn.TextColor3 = Color3.new(1,1,1)
 btn.BackgroundColor3 = Color3.fromRGB(0,170,255)
-btn.BorderSizePixel = 0
+btn.TextColor3 = Color3.new(1,1,1)
 
 btn.MouseButton1Click:Connect(function()
     local res = HttpService:PostAsync(
@@ -268,8 +257,7 @@ btn.MouseButton1Click:Connect(function()
         Enum.HttpContentType.ApplicationJson
     )
 
-    local decoded = HttpService:JSONDecode(res)
-    if decoded.success then
+    if HttpService:JSONDecode(res).success then
         gui:Destroy()
         loadstring(game:HttpGet("{raw_url}"))()
     else
@@ -281,7 +269,7 @@ end)
     return Response(lua, mimetype="text/plain")
 
 # ===============================
-# RAW SCRIPT DELIVERY
+# RAW SCRIPT
 # ===============================
 @app.route("/raw/<script_id>")
 def raw(script_id):
@@ -295,16 +283,13 @@ def raw(script_id):
     ts = request.args.get("ts")
     sig = request.args.get("sig")
 
-    if not token or not ts or not sig:
-        return Response("Forbidden", 403)
-
     if token != data["token"]:
         return Response("Forbidden", 403)
 
     try:
         if abs(time.time() - int(ts)) > 10:
             return Response("Expired", 403)
-    except ValueError:
+    except:
         return Response("Invalid timestamp", 403)
 
     expected = hmac.new(
