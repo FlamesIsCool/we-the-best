@@ -2,9 +2,9 @@ from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
 import os, json, time, hmac, hashlib, secrets, requests
 
-# ===============================
+# ============================================================
 # ENV
-# ===============================
+# ============================================================
 SECRET_KEY_RAW = os.environ.get("LUADEC_SECRET_KEY")
 EXECUTOR_SECRET = os.environ.get("LUADEC_EXECUTOR_SECRET")
 LOOTLABS_API_KEY = os.environ.get("LOOTLABS_API_KEY")
@@ -16,9 +16,9 @@ if not all([SECRET_KEY_RAW, EXECUTOR_SECRET, LOOTLABS_API_KEY, FIREBASE_JSON]):
 SECRET_KEY = SECRET_KEY_RAW.encode()
 EXECUTOR_HEADER = "X-LuaDec-Client"
 
-# ===============================
+# ============================================================
 # FIREBASE
-# ===============================
+# ============================================================
 import firebase_admin
 from firebase_admin import credentials, firestore
 
@@ -28,22 +28,22 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-# ===============================
+# ============================================================
 # APP
-# ===============================
+# ============================================================
 app = Flask(__name__)
 CORS(app)
 
-# ===============================
+# ============================================================
 # SECURITY
-# ===============================
+# ============================================================
 def require_executor():
     hdr = request.headers.get(EXECUTOR_HEADER)
     return bool(hdr and hmac.compare_digest(hdr, EXECUTOR_SECRET))
 
-# ===============================
+# ============================================================
 # HELPERS
-# ===============================
+# ============================================================
 def gen_id():
     return secrets.token_hex(4)
 
@@ -56,9 +56,9 @@ def gen_key():
 def hash_key(k: str):
     return hashlib.sha256(k.encode()).hexdigest()
 
-# ===============================
+# ============================================================
 # LOOTLABS
-# ===============================
+# ============================================================
 def create_lootlabs_link(script_id):
     try:
         r = requests.post(
@@ -86,9 +86,9 @@ def create_lootlabs_link(script_id):
         pass
     return None
 
-# ===============================
+# ============================================================
 # UPLOAD SCRIPT
-# ===============================
+# ============================================================
 @app.route("/api/upload", methods=["POST"])
 def upload():
     data = request.get_json(silent=True) or {}
@@ -115,9 +115,9 @@ def upload():
         "lootlabs": loot
     })
 
-# ===============================
+# ============================================================
 # KEY PAGE
-# ===============================
+# ============================================================
 @app.route("/key/<script_id>")
 def key_page(script_id):
     if not db.collection("scripts").document(script_id).get().exists:
@@ -154,9 +154,9 @@ background:#00aaff;font-weight:bold;">Copy Key</button>
 </html>
 """
 
-# ===============================
+# ============================================================
 # VERIFY KEY
-# ===============================
+# ============================================================
 @app.route("/api/verify_key", methods=["POST"])
 def verify_key():
     data = request.get_json(silent=True) or {}
@@ -173,9 +173,9 @@ def verify_key():
     valid = hash_key(key) in doc.to_dict().get("hashes", [])
     return jsonify({"success": valid})
 
-# ===============================
-# SIGNED LOADER (ANTI CURL)
-# ===============================
+# ============================================================
+# SIGNED LOADER (EXECUTOR SAFE)
+# ============================================================
 @app.route("/signed/<script_id>")
 def signed(script_id):
     if not require_executor():
@@ -200,12 +200,21 @@ def signed(script_id):
 -- LuaDec Secure Loader
 
 local HttpService = game:GetService("HttpService")
-if not request then return end
+
+local http =
+    request
+    or http_request
+    or (syn and syn.request)
+    or (http and http.request)
+
+if not http then
+    return
+end
 
 local SECRET = "{EXECUTOR_SECRET}"
 
 local function httpget(url)
-    return request({{
+    return http({{
         Url = url,
         Method = "GET",
         Headers = {{
@@ -237,7 +246,7 @@ btn.Text = "Verify Key"
 btn.BackgroundColor3 = Color3.fromRGB(0,170,255)
 
 btn.MouseButton1Click:Connect(function()
-    local r = request({{
+    local r = http({{
         Url = "https://luadec.net/api/verify_key",
         Method = "POST",
         Headers = {{
@@ -264,9 +273,9 @@ end)
 
     return Response(lua, mimetype="text/plain")
 
-# ===============================
-# RAW SCRIPT (SIGNED)
-# ===============================
+# ============================================================
+# RAW SCRIPT (SIGNED + HEADER)
+# ============================================================
 @app.route("/raw/<script_id>")
 def raw(script_id):
     if not require_executor():
@@ -298,9 +307,9 @@ def raw(script_id):
 
     return Response(d["script"], mimetype="text/plain")
 
-# ===============================
+# ============================================================
 # START
-# ===============================
+# ============================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print("LuaDec backend running on", port)
