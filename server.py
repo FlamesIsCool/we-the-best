@@ -1,15 +1,9 @@
 from flask import Flask, request, Response, jsonify, send_from_directory
 from flask_cors import CORS
-import secrets
-import hmac
-import hashlib
-import time
-import os
-import json
-import requests
+import secrets, hmac, hashlib, time, os, json, requests
 
 # ===============================
-# FIREBASE SETUP
+# FIREBASE
 # ===============================
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -17,7 +11,7 @@ from firebase_admin import credentials, firestore
 if not firebase_admin._apps:
     cred_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
     if not cred_json:
-        raise RuntimeError("FIREBASE_SERVICE_ACCOUNT not set")
+        raise RuntimeError("FIREBASE_SERVICE_ACCOUNT missing")
 
     cred = credentials.Certificate(json.loads(cred_json))
     firebase_admin.initialize_app(cred)
@@ -25,7 +19,7 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 # ===============================
-# APP SETUP
+# APP
 # ===============================
 app = Flask(__name__)
 CORS(app)
@@ -37,10 +31,10 @@ SECRET_KEY = os.environ.get("LUADEC_SECRET_KEY")
 LOOTLABS_API_KEY = os.environ.get("LOOTLABS_API_KEY")
 
 if not SECRET_KEY:
-    raise RuntimeError("LUADEC_SECRET_KEY not set")
+    raise RuntimeError("LUADEC_SECRET_KEY missing")
 
 if not LOOTLABS_API_KEY:
-    raise RuntimeError("LOOTLABS_API_KEY not set")
+    raise RuntimeError("LOOTLABS_API_KEY missing")
 
 SECRET_KEY = SECRET_KEY.encode()
 
@@ -61,36 +55,50 @@ def hash_key(key: str) -> str:
 
 def roblox_only(req):
     ua = (req.headers.get("User-Agent") or "").lower()
-    blocked = ["curl", "python", "requests", "httpx", "aiohttp", "node"]
     if not ua.startswith("roblox"):
         return False
+    blocked = ["curl", "python", "requests", "httpx", "aiohttp", "node"]
     return not any(b in ua for b in blocked)
 
 # ===============================
-# LOOTLABS (CONTENT LOCKER)
+# LOOTLABS (SAFE)
 # ===============================
-def create_lootlabs_link(script_id: str) -> str:
-    r = requests.post(
-        "https://creators.lootlabs.gg/api/public/content_locker",
-        headers={
-            "Authorization": f"Bearer {LOOTLABS_API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "title": f"Luadec Script {script_id}",
-            "url": f"https://luadec.net/key/{script_id}",
-            "tier_id": 2,
-            "number_of_tasks": 3,
-            "theme": 1
-        },
-        timeout=10
-    )
+def create_lootlabs_link(script_id: str):
+    try:
+        r = requests.post(
+            "https://creators.lootlabs.gg/api/public/content_locker",
+            headers={
+                "Authorization": f"Bearer {LOOTLABS_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "title": f"Luadec Script {script_id}",
+                "url": f"https://luadec.net/key/{script_id}",
+                "tier_id": 2,
+                "number_of_tasks": 3,
+                "theme": 1
+            },
+            timeout=10
+        )
 
-    r.raise_for_status()
-    return r.json()["message"]["loot_url"]
+        data = r.json()
+        print("LootLabs response:", data)
+
+        msg = data.get("message")
+
+        if isinstance(msg, dict):
+            return msg.get("loot_url")
+
+        if isinstance(msg, list) and len(msg) > 0:
+            return msg[0].get("loot_url")
+
+    except Exception as e:
+        print("LootLabs error:", e)
+
+    return None
 
 # ===============================
-# API: UPLOAD SCRIPT
+# API: UPLOAD
 # ===============================
 @app.route("/api/upload", methods=["POST"])
 def upload():
@@ -154,8 +162,8 @@ def signed(script_id):
         return Response("Not found", 404)
 
     data = doc.to_dict()
-
     ts = str(int(time.time()))
+
     sig = hmac.new(
         SECRET_KEY,
         f"{script_id}{ts}".encode(),
@@ -221,7 +229,7 @@ end)
     return Response(lua, mimetype="text/plain")
 
 # ===============================
-# RAW SCRIPT DELIVERY
+# RAW SCRIPT
 # ===============================
 @app.route("/raw/<script_id>")
 def raw(script_id):
