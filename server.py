@@ -1,4 +1,4 @@
-from flask import Flask, request, Response, jsonify, send_from_directory
+from flask import Flask, request, Response, jsonify
 from flask_cors import CORS
 import os, json, time, hmac, hashlib, secrets, requests
 
@@ -6,17 +6,15 @@ import os, json, time, hmac, hashlib, secrets, requests
 # ENV
 # ===============================
 SECRET_KEY_RAW = os.environ.get("LUADEC_SECRET_KEY")
+EXECUTOR_SECRET = os.environ.get("LUADEC_EXECUTOR_SECRET")
 LOOTLABS_API_KEY = os.environ.get("LOOTLABS_API_KEY")
 FIREBASE_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 
-if not SECRET_KEY_RAW:
-    raise RuntimeError("LUADEC_SECRET_KEY missing")
-if not LOOTLABS_API_KEY:
-    raise RuntimeError("LOOTLABS_API_KEY missing")
-if not FIREBASE_JSON:
-    raise RuntimeError("FIREBASE_SERVICE_ACCOUNT missing")
+if not all([SECRET_KEY_RAW, EXECUTOR_SECRET, LOOTLABS_API_KEY, FIREBASE_JSON]):
+    raise RuntimeError("Missing environment variables")
 
 SECRET_KEY = SECRET_KEY_RAW.encode()
+EXECUTOR_HEADER = "X-LuaDec-Client"
 
 # ===============================
 # FIREBASE
@@ -24,8 +22,10 @@ SECRET_KEY = SECRET_KEY_RAW.encode()
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-cred = credentials.Certificate(json.loads(FIREBASE_JSON))
-firebase_admin.initialize_app(cred)
+if not firebase_admin._apps:
+    cred = credentials.Certificate(json.loads(FIREBASE_JSON))
+    firebase_admin.initialize_app(cred)
+
 db = firestore.client()
 
 # ===============================
@@ -33,6 +33,13 @@ db = firestore.client()
 # ===============================
 app = Flask(__name__)
 CORS(app)
+
+# ===============================
+# SECURITY
+# ===============================
+def require_executor():
+    hdr = request.headers.get(EXECUTOR_HEADER)
+    return bool(hdr and hmac.compare_digest(hdr, EXECUTOR_SECRET))
 
 # ===============================
 # HELPERS
@@ -53,39 +60,39 @@ def hash_key(k: str):
 # LOOTLABS
 # ===============================
 def create_lootlabs_link(script_id):
-    r = requests.post(
-        "https://creators.lootlabs.gg/api/public/content_locker",
-        headers={
-            "Authorization": f"Bearer {LOOTLABS_API_KEY}",
-            "Content-Type": "application/json"
-        },
-        json={
-            "title": f"LuaDec Script {script_id}",
-            "url": f"https://luadec.net/key/{script_id}",
-            "tier_id": 2,
-            "number_of_tasks": 3,
-            "theme": 1
-        },
-        timeout=10
-    )
-
-    data = r.json()
-    msg = data.get("message")
-
-    if isinstance(msg, dict):
-        return msg.get("loot_url")
-    if isinstance(msg, list) and msg:
-        return msg[0].get("loot_url")
-
+    try:
+        r = requests.post(
+            "https://creators.lootlabs.gg/api/public/content_locker",
+            headers={
+                "Authorization": f"Bearer {LOOTLABS_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "title": f"LuaDec Script {script_id}",
+                "url": f"https://luadec.net/key/{script_id}",
+                "tier_id": 2,
+                "number_of_tasks": 3,
+                "theme": 1
+            },
+            timeout=10
+        )
+        data = r.json()
+        msg = data.get("message")
+        if isinstance(msg, dict):
+            return msg.get("loot_url")
+        if isinstance(msg, list) and msg:
+            return msg[0].get("loot_url")
+    except:
+        pass
     return None
 
 # ===============================
-# API: UPLOAD SCRIPT
+# UPLOAD SCRIPT
 # ===============================
 @app.route("/api/upload", methods=["POST"])
 def upload():
-    payload = request.get_json(silent=True) or {}
-    script = payload.get("script")
+    data = request.get_json(silent=True) or {}
+    script = data.get("script")
 
     if not isinstance(script, str):
         return jsonify({"error": "Invalid script"}), 400
@@ -93,100 +100,56 @@ def upload():
     script_id = gen_id()
     token = gen_token()
 
-    loot_url = create_lootlabs_link(script_id)
-
     db.collection("scripts").document(script_id).set({
         "script": script,
         "token": token,
-        "created_at": int(time.time())
+        "created": int(time.time())
     })
+
+    loot = create_lootlabs_link(script_id)
 
     loader = f'loadstring(game:HttpGet("https://luadec.net/signed/{script_id}"))()'
 
     return jsonify({
         "success": True,
         "loader": loader,
-        "lootlabs": loot_url
+        "lootlabs": loot
     })
 
 # ===============================
-# KEY PAGE (GENERATES KEY)
+# KEY PAGE
 # ===============================
 @app.route("/key/<script_id>")
 def key_page(script_id):
-    script_doc = db.collection("scripts").document(script_id).get()
-    if not script_doc.exists:
-        return Response("Invalid link", 404)
+    if not db.collection("scripts").document(script_id).get().exists:
+        return "Invalid link", 404
 
-    raw_key = gen_key()
-    key_hash = hash_key(raw_key)
+    key = gen_key()
+    key_hash = hash_key(key)
 
     ref = db.collection("keys").document(script_id)
     doc = ref.get()
     hashes = doc.to_dict().get("hashes", []) if doc.exists else []
-
     hashes.append(key_hash)
 
     ref.set({
         "hashes": hashes,
-        "updated_at": int(time.time())
+        "updated": int(time.time())
     })
-
-    loader = f'loadstring(game:HttpGet("https://luadec.net/signed/{script_id}"))()'
 
     return f"""
 <!DOCTYPE html>
 <html>
-<head>
-<title>LuaDec Key</title>
-<style>
-body {{
-    background:#0f0f0f;
-    color:white;
-    font-family:Arial;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    height:100vh;
-}}
-.box {{
-    background:#151515;
-    padding:32px;
-    border-radius:14px;
-    width:420px;
-    text-align:center;
-}}
-.key {{
-    background:#0b0b0b;
-    padding:14px;
-    border-radius:10px;
-    font-family:monospace;
-    margin:16px 0;
-}}
-button {{
-    padding:10px 16px;
-    border:none;
-    border-radius:8px;
-    background:#00aaff;
-    font-weight:bold;
-    cursor:pointer;
-    margin:6px;
-}}
-</style>
-<script>
-function copy(v) {{
-    navigator.clipboard.writeText(v);
-    alert("Copied");
-}}
-</script>
-</head>
-<body>
-<div class="box">
+<body style="background:#0f0f0f;color:white;font-family:Arial;
+display:flex;align-items:center;justify-content:center;height:100vh;">
+<div style="background:#151515;padding:30px;border-radius:14px;width:420px;text-align:center;">
 <h2>Key Generated</h2>
-<div class="key">{raw_key}</div>
-<button onclick="copy('{raw_key}')">Copy Key</button>
-<button onclick="copy(`{loader}`)">Copy Loader</button>
-<p>Return to the app and paste your key.</p>
+<div style="background:#0b0b0b;padding:14px;border-radius:10px;
+font-family:monospace;margin:16px 0;">{key}</div>
+<button onclick="navigator.clipboard.writeText('{key}')"
+style="padding:10px 16px;border:none;border-radius:8px;
+background:#00aaff;font-weight:bold;">Copy Key</button>
+<p>Paste this key into the executor UI</p>
 </div>
 </body>
 </html>
@@ -212,13 +175,16 @@ def verify_key():
     return jsonify({"success": valid})
 
 # ===============================
-# SIGNED LOADER
+# SIGNED LOADER (ANTI CURL / CMD)
 # ===============================
 @app.route("/signed/<script_id>")
 def signed(script_id):
+    if not require_executor():
+        return Response("Forbidden", 403)
+
     doc = db.collection("scripts").document(script_id).get()
     if not doc.exists:
-        return Response("Not found", 404)
+        return "Not found", 404
 
     token = doc.to_dict()["token"]
     ts = str(int(time.time()))
@@ -231,19 +197,85 @@ def signed(script_id):
 
     raw_url = f"https://luadec.net/raw/{script_id}?token={token}&ts={ts}&sig={sig}"
 
-    return Response(
-        f'loadstring(game:HttpGet("{raw_url}"))()',
-        mimetype="text/plain"
-    )
+    lua = f'''
+-- LuaDec Secure Loader
+
+local HttpService = game:GetService("HttpService")
+if not request then return end
+
+local SECRET = "{EXECUTOR_SECRET}"
+
+local function httpget(url)
+    return request({{
+        Url = url,
+        Method = "GET",
+        Headers = {{
+            ["{EXECUTOR_HEADER}"] = SECRET
+        }}
+    }}).Body
+end
+
+local gui = Instance.new("ScreenGui", game.CoreGui)
+gui.Name = "LuaDecKeyUI"
+
+local f = Instance.new("Frame", gui)
+f.Size = UDim2.fromScale(0.35,0.25)
+f.Position = UDim2.fromScale(0.325,0.375)
+f.BackgroundColor3 = Color3.fromRGB(20,20,20)
+Instance.new("UICorner", f).CornerRadius = UDim.new(0,14)
+
+local box = Instance.new("TextBox", f)
+box.Size = UDim2.fromScale(0.9,0.3)
+box.Position = UDim2.fromScale(0.05,0.35)
+box.PlaceholderText = "Enter Key"
+box.BackgroundColor3 = Color3.fromRGB(10,10,10)
+box.TextColor3 = Color3.new(1,1,1)
+
+local btn = Instance.new("TextButton", f)
+btn.Size = UDim2.fromScale(0.4,0.25)
+btn.Position = UDim2.fromScale(0.3,0.7)
+btn.Text = "Verify Key"
+btn.BackgroundColor3 = Color3.fromRGB(0,170,255)
+
+btn.MouseButton1Click:Connect(function()
+    local r = request({{
+        Url = "https://luadec.net/api/verify_key",
+        Method = "POST",
+        Headers = {{
+            ["Content-Type"] = "application/json",
+            ["{EXECUTOR_HEADER}"] = SECRET
+        }},
+        Body = HttpService:JSONEncode({{
+            script_id = "{script_id}",
+            key = box.Text
+        }})
+    })
+
+    local d = HttpService:JSONDecode(r.Body)
+    if d.success then
+        gui:Destroy()
+        loadstring(httpget("{raw_url}"))()
+    else
+        btn.Text = "Invalid Key"
+        task.wait(1)
+        btn.Text = "Verify Key"
+    end
+end)
+'''
+
+    return Response(lua, mimetype="text/plain")
 
 # ===============================
-# RAW SCRIPT (SIGNED ONLY)
+# RAW SCRIPT (SIGNED + HEADER)
 # ===============================
 @app.route("/raw/<script_id>")
 def raw(script_id):
+    if not require_executor():
+        return Response("Forbidden", 403)
+
     doc = db.collection("scripts").document(script_id).get()
     if not doc.exists:
-        return Response("Not found", 404)
+        return "Not found", 404
 
     d = doc.to_dict()
     token = request.args.get("token")
@@ -251,10 +283,10 @@ def raw(script_id):
     sig = request.args.get("sig")
 
     if token != d["token"]:
-        return Response("Forbidden", 403)
+        return "Forbidden", 403
 
     if abs(time.time() - int(ts)) > 10:
-        return Response("Expired", 403)
+        return "Expired", 403
 
     expected = hmac.new(
         SECRET_KEY,
@@ -263,16 +295,9 @@ def raw(script_id):
     ).hexdigest()
 
     if not hmac.compare_digest(expected, sig):
-        return Response("Invalid signature", 403)
+        return "Invalid", 403
 
     return Response(d["script"], mimetype="text/plain")
-
-# ===============================
-# ROOT
-# ===============================
-@app.route("/")
-def home():
-    return send_from_directory(".", "index.html")
 
 # ===============================
 # START
@@ -280,4 +305,4 @@ def home():
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print("LuaDec backend running on", port)
-    app.run(host="0.0.0.0", port=port)
+    app.run("0.0.0.0", port)
