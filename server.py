@@ -107,7 +107,6 @@ def upload():
     })
 
     loot = create_lootlabs_link(script_id)
-
     loader = f'loadstring(game:HttpGet("https://luadec.net/signed/{script_id}"))()'
 
     return jsonify({
@@ -175,7 +174,7 @@ def verify_key():
     return jsonify({"success": valid})
 
 # ===============================
-# SIGNED LOADER (ANTI CURL / CMD)
+# SIGNED LOADER (ANTI CURL)
 # ===============================
 @app.route("/signed/<script_id>")
 def signed(script_id):
@@ -218,20 +217,20 @@ end
 local gui = Instance.new("ScreenGui", game.CoreGui)
 gui.Name = "LuaDecKeyUI"
 
-local f = Instance.new("Frame", gui)
-f.Size = UDim2.fromScale(0.35,0.25)
-f.Position = UDim2.fromScale(0.325,0.375)
-f.BackgroundColor3 = Color3.fromRGB(20,20,20)
-Instance.new("UICorner", f).CornerRadius = UDim.new(0,14)
+local frame = Instance.new("Frame", gui)
+frame.Size = UDim2.fromScale(0.35,0.25)
+frame.Position = UDim2.fromScale(0.325,0.375)
+frame.BackgroundColor3 = Color3.fromRGB(20,20,20)
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0,14)
 
-local box = Instance.new("TextBox", f)
+local box = Instance.new("TextBox", frame)
 box.Size = UDim2.fromScale(0.9,0.3)
 box.Position = UDim2.fromScale(0.05,0.35)
 box.PlaceholderText = "Enter Key"
 box.BackgroundColor3 = Color3.fromRGB(10,10,10)
 box.TextColor3 = Color3.new(1,1,1)
 
-local btn = Instance.new("TextButton", f)
+local btn = Instance.new("TextButton", frame)
 btn.Size = UDim2.fromScale(0.4,0.25)
 btn.Position = UDim2.fromScale(0.3,0.7)
 btn.Text = "Verify Key"
@@ -249,7 +248,7 @@ btn.MouseButton1Click:Connect(function()
             script_id = "{script_id}",
             key = box.Text
         }})
-    })
+    }})
 
     local d = HttpService:JSONDecode(r.Body)
     if d.success then
@@ -266,7 +265,7 @@ end)
     return Response(lua, mimetype="text/plain")
 
 # ===============================
-# RAW SCRIPT (SIGNED + HEADER)
+# RAW SCRIPT (SIGNED)
 # ===============================
 @app.route("/raw/<script_id>")
 def raw(script_id):
