@@ -1,210 +1,191 @@
-from flask import Flask, request, Response, jsonify
+from flask import Flask, request, Response, jsonify, send_from_directory
 from flask_cors import CORS
-from flask import send_from_directory
-import secrets
-import hmac
-import hashlib
-import time
-import os
-import json
+import secrets, hmac, hashlib, time, os, json, requests
 
 # ===============================
-# FIREBASE SETUP (INLINE)
+# FIREBASE
 # ===============================
 import firebase_admin
 from firebase_admin import credentials, firestore
 
 if not firebase_admin._apps:
-    cred_json = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-    if not cred_json:
-        raise RuntimeError("FIREBASE_SERVICE_ACCOUNT is not set")
-
-    cred = credentials.Certificate(json.loads(cred_json))
+    cred = credentials.Certificate(json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"]))
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
 # ===============================
-# APP SETUP
+# APP
 # ===============================
 app = Flask(__name__)
-
-CORS(
-    app,
-    resources={
-        r"/api/*": {
-            "origins": [
-                "https://luadec.net",
-                "https://api.luadec.net"
-            ]
-        }
-    }
-)
+CORS(app)
 
 # ===============================
-# SECURITY
+# ENV
 # ===============================
-SECRET_KEY = os.environ.get("LUADEC_SECRET_KEY")
-if not SECRET_KEY:
-    raise RuntimeError("LUADEC_SECRET_KEY is not set")
-
-SECRET_KEY = SECRET_KEY.encode()
+SECRET_KEY = os.environ["LUADEC_SECRET_KEY"].encode()
+LOOTLABS_API_KEY = os.environ["LOOTLABS_API_KEY"]
 
 # ===============================
 # HELPERS
 # ===============================
-def generate_id():
-    return secrets.token_hex(4)
-
-def generate_token():
-    return secrets.token_urlsafe(16)
+def gen_id(): return secrets.token_hex(4)
+def gen_token(): return secrets.token_urlsafe(16)
+def gen_key(): return secrets.token_urlsafe(12)
+def hash_key(k): return hashlib.sha256(k.encode()).hexdigest()
 
 def roblox_only(req):
     ua = (req.headers.get("User-Agent") or "").lower()
-    blocked = [
-        "curl", "wget", "python", "requests",
-        "powershell", "httpclient", "java",
-        "node", "httpx", "aiohttp"
-    ]
-    if any(b in ua for b in blocked):
-        return False
-    return ua.startswith("roblox")
+    return ua.startswith("roblox") and not any(
+        x in ua for x in ["curl","python","requests","httpx","aiohttp"]
+    )
 
 # ===============================
-# DATABASE HELPERS (SIMPLE)
+# LOOTLABS
 # ===============================
-def save_script(script_id, script, token):
-    db.collection("scripts").document(script_id).set({
-        "script": script,
-        "token": token,
-        "created_at": int(time.time())
-    })
-
-def get_script(script_id):
-    doc = db.collection("scripts").document(script_id).get()
-    if not doc.exists:
-        return None
-
-    data = doc.to_dict()
-    if "script" not in data or "token" not in data:
-        return None
-
-    return {
-        "content": data["script"],
-        "token": data["token"]
-    }
+def create_lootlabs_link(script_id):
+    r = requests.post(
+        "https://creators.lootlabs.gg/api/public/content_locker",
+        headers={
+            "Authorization": f"Bearer {LOOTLABS_API_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "title": f"Luadec Script {script_id}",
+            "url": f"https://luadec.net/key/{script_id}",
+            "tier_id": 2,
+            "number_of_tasks": 3,
+            "theme": 1
+        }
+    )
+    r.raise_for_status()
+    return r.json()["message"]["loot_url"]
 
 # ===============================
-# API: UPLOAD SCRIPT
+# UPLOAD
 # ===============================
 @app.route("/api/upload", methods=["POST"])
 def upload():
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     script = data.get("script")
 
-    if not script or not isinstance(script, str):
-        return jsonify({"error": "Invalid script"}), 400
+    if not isinstance(script, str):
+        return jsonify({"error":"Invalid script"}),400
 
-    script_id = generate_id()
-    token = generate_token()
+    script_id = gen_id()
+    token = gen_token()
+    raw_key = gen_key()
 
-    save_script(script_id, script, token)
+    loot_url = create_lootlabs_link(script_id)
 
-    loader = f'loadstring(game:HttpGet("https://luadec.net/signed/{script_id}"))()'
+    db.collection("scripts").document(script_id).set({
+        "script": script,
+        "token": token,
+        "key_hash": hash_key(raw_key),
+        "loot_url": loot_url,
+        "created": int(time.time())
+    })
 
     return jsonify({
         "success": True,
         "script_id": script_id,
-        "loader": loader
+        "loader": f'loadstring(game:HttpGet("https://luadec.net/signed/{script_id}"))()',
+        "lootlabs": loot_url
     })
 
 # ===============================
-# SIGNED LOADER
+# KEY VERIFY
 # ===============================
-@app.route("/signed/<script_id>")
-def signed(script_id):
-    data = get_script(script_id)
-    if not data:
-        return Response("Not found", status=404)
+@app.route("/api/verify_key", methods=["POST"])
+def verify_key():
+    d = request.get_json() or {}
+    doc = db.collection("scripts").document(d.get("script_id","")).get()
+
+    if not doc.exists:
+        return jsonify({"success":False})
+
+    if hash_key(d.get("key","")) != doc.to_dict()["key_hash"]:
+        return jsonify({"success":False})
+
+    return jsonify({"success":True})
+
+# ===============================
+# SIGNED
+# ===============================
+@app.route("/signed/<sid>")
+def signed(sid):
+    doc = db.collection("scripts").document(sid).get()
+    if not doc.exists:
+        return Response("Not found",404)
 
     ts = str(int(time.time()))
-    msg = f"{script_id}{ts}".encode()
+    sig = hmac.new(SECRET_KEY, f"{sid}{ts}".encode(), hashlib.sha256).hexdigest()
 
-    sig = hmac.new(
-        SECRET_KEY,
-        msg,
-        hashlib.sha256
-    ).hexdigest()
+    raw = f"https://luadec.net/raw/{sid}?token={doc.to_dict()['token']}&ts={ts}&sig={sig}"
 
-    raw_url = (
-        f"https://luadec.net/raw/{script_id}"
-        f"?token={data['token']}&ts={ts}&sig={sig}"
+    lua = f'''
+local h=game:GetService("HttpService")
+local p=game.Players.LocalPlayer
+local id="{sid}"
+
+local g=Instance.new("ScreenGui",p.PlayerGui)
+local f=Instance.new("Frame",g)
+f.Size=UDim2.fromScale(.35,.25)
+f.Position=UDim2.fromScale(.5,.5)
+f.AnchorPoint=Vector2.new(.5,.5)
+f.BackgroundColor3=Color3.fromRGB(15,15,15)
+
+local b=Instance.new("TextBox",f)
+b.Size=UDim2.fromScale(.85,.3)
+b.Position=UDim2.fromScale(.075,.35)
+b.PlaceholderText="Enter Key"
+b.TextColor3=Color3.new(1,1,1)
+
+local t=Instance.new("TextButton",f)
+t.Size=UDim2.fromScale(.4,.25)
+t.Position=UDim2.fromScale(.3,.7)
+t.Text="Verify"
+
+t.MouseButton1Click:Connect(function()
+    local r=h:PostAsync(
+        "https://luadec.net/api/verify_key",
+        h:JSONEncode({script_id=id,key=b.Text}),
+        Enum.HttpContentType.ApplicationJson
     )
+    if h:JSONDecode(r).success then
+        g:Destroy()
+        loadstring(game:HttpGet("{raw}"))()
+    else
+        b.Text="Invalid Key"
+    end
+end)
+'''
 
-    return Response(
-        f'loadstring(game:HttpGet("{raw_url}"))()',
-        mimetype="text/plain"
-    )
+    return Response(lua,mimetype="text/plain")
 
 # ===============================
-# RAW SCRIPT DELIVERY
+# RAW
 # ===============================
-@app.route("/raw/<script_id>")
-def raw(script_id):
-    data = get_script(script_id)
-    if not data:
-        return Response("Not found", status=404)
+@app.route("/raw/<sid>")
+def raw(sid):
+    doc = db.collection("scripts").document(sid).get()
+    if not doc.exists:
+        return Response("Not found",404)
 
-    token = request.args.get("token")
-    ts = request.args.get("ts")
-    sig = request.args.get("sig")
-
-    if not token or not ts or not sig:
-        return Response("Missing parameters", status=403)
-
-    if token != data["token"]:
-        return Response("Invalid token", status=403)
-
-    try:
-        ts_int = int(ts)
-    except ValueError:
-        return Response("Invalid timestamp", status=403)
-
-    if abs(time.time() - ts_int) > 10:
-        return Response("Expired request", status=403)
-
-    msg = f"{script_id}{ts}".encode()
-    expected = hmac.new(
-        SECRET_KEY,
-        msg,
-        hashlib.sha256
-    ).hexdigest()
-
-    if not hmac.compare_digest(expected, sig):
-        return Response("Invalid signature", status=403)
+    d = doc.to_dict()
+    if request.args.get("token") != d["token"]:
+        return Response("Forbidden",403)
 
     if not roblox_only(request):
-        return Response("Access denied", status=403)
+        return Response("Denied",403)
 
-    return Response(
-        data["content"],
-        mimetype="text/plain"
-    )
+    return Response(d["script"],mimetype="text/plain")
 
 # ===============================
-# HEALTH CHECK
+# SITE
 # ===============================
-
 @app.route("/")
-def website():
-    ua = (request.headers.get("User-Agent") or "").lower()
-    if ua.startswith("roblox"):
-        return Response("Not Found", status=404)
+def site():
+    if (request.headers.get("User-Agent") or "").lower().startswith("roblox"):
+        return Response("Not found",404)
     return send_from_directory(".", "index.html")
-
-# ===============================
-# STARTUP
-# ===============================
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
