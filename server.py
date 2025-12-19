@@ -3,7 +3,7 @@ from flask_cors import CORS
 import secrets, hmac, hashlib, time, os, json, requests
 
 # ===============================
-# FIREBASE
+# FIREBASE SETUP
 # ===============================
 import firebase_admin
 from firebase_admin import credentials, firestore
@@ -19,7 +19,7 @@ if not firebase_admin._apps:
 db = firestore.client()
 
 # ===============================
-# APP
+# APP SETUP
 # ===============================
 app = Flask(__name__)
 CORS(app)
@@ -32,7 +32,6 @@ LOOTLABS_API_KEY = os.environ.get("LOOTLABS_API_KEY")
 
 if not SECRET_KEY:
     raise RuntimeError("LUADEC_SECRET_KEY missing")
-
 if not LOOTLABS_API_KEY:
     raise RuntimeError("LOOTLABS_API_KEY missing")
 
@@ -98,7 +97,7 @@ def create_lootlabs_link(script_id: str):
     return None
 
 # ===============================
-# API: UPLOAD
+# API: UPLOAD SCRIPT
 # ===============================
 @app.route("/api/upload", methods=["POST"])
 def upload():
@@ -151,6 +150,59 @@ def verify_key():
         return jsonify({"success": False})
 
     return jsonify({"success": True})
+
+# ===============================
+# KEY LANDING PAGE (OPTION 1)
+# ===============================
+@app.route("/key/<script_id>")
+def key_page(script_id):
+    doc = db.collection("scripts").document(script_id).get()
+    if not doc.exists:
+        return Response("Invalid key link.", status=404)
+
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>LuaDec Key Unlocked</title>
+    <style>
+        body {{
+            background: #0f0f0f;
+            color: white;
+            font-family: Arial, sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }}
+        .box {{
+            background: #151515;
+            padding: 32px;
+            border-radius: 14px;
+            width: 420px;
+            text-align: center;
+            box-shadow: 0 0 40px rgba(0,0,0,0.6);
+        }}
+        h1 {{
+            margin-bottom: 12px;
+        }}
+        p {{
+            opacity: 0.85;
+            line-height: 1.5;
+        }}
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h1>✅ Key Unlocked</h1>
+        <p>Your key has been successfully unlocked.</p>
+        <p><b>Return to Roblox</b> and paste your key into the LuaDec key window.</p>
+        <p>You may now close this page.</p>
+    </div>
+</body>
+</html>
+"""
 
 # ===============================
 # SIGNED LOADER
@@ -229,7 +281,7 @@ end)
     return Response(lua, mimetype="text/plain")
 
 # ===============================
-# RAW SCRIPT
+# RAW SCRIPT DELIVERY
 # ===============================
 @app.route("/raw/<script_id>")
 def raw(script_id):
