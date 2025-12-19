@@ -19,7 +19,7 @@ import requests
 SCRIPTS_COLLECTION = "scripts"
 KEYS_COLLECTION = "keys"
 
-SIGNED_TTL_SECONDS = 10
+SIGNED_TTL = 10
 
 WORKINK_CREATE_URL = "https://dashboard.work.ink/_api/v1/link"
 WORKINK_VALIDATE_URL = "https://work.ink/_api/v2/token/isValid/{}"
@@ -27,18 +27,9 @@ WORKINK_VALIDATE_URL = "https://work.ink/_api/v2/token/isValid/{}"
 # ==========================================================
 # ENV
 # ==========================================================
-SECRET_KEY = os.environ.get("LUADEC_SECRET_KEY")
-WORKINK_API_KEY = os.environ.get("WORKINK_API_KEY")
-FIREBASE_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
-
-if not SECRET_KEY:
-    raise RuntimeError("LUADEC_SECRET_KEY missing")
-if not WORKINK_API_KEY:
-    raise RuntimeError("WORKINK_API_KEY missing")
-if not FIREBASE_JSON:
-    raise RuntimeError("FIREBASE_SERVICE_ACCOUNT missing")
-
-SECRET_KEY = SECRET_KEY.encode()
+SECRET_KEY = os.environ["LUADEC_SECRET_KEY"].encode()
+WORKINK_API_KEY = os.environ["WORKINK_API_KEY"]
+FIREBASE_JSON = os.environ["FIREBASE_SERVICE_ACCOUNT"]
 
 # ==========================================================
 # FIREBASE
@@ -67,9 +58,9 @@ def gen_internal_token():
 def gen_key():
     return "LUME-" + secrets.token_hex(6).upper()
 
-def is_roblox_request(req):
+def is_roblox(req):
     ua = (req.headers.get("User-Agent") or "").lower()
-    blocked = ["curl", "wget", "python", "requests", "httpx", "aiohttp"]
+    blocked = ["curl", "wget", "python", "requests", "httpx"]
     if any(b in ua for b in blocked):
         return False
     return ua.startswith("roblox")
@@ -83,7 +74,7 @@ def create_workink_link(script_id):
         f"?script_id={script_id}&token={{TOKEN}}"
     )
 
-    response = requests.post(
+    r = requests.post(
         WORKINK_CREATE_URL,
         headers={
             "X-Api-Key": WORKINK_API_KEY,
@@ -97,38 +88,30 @@ def create_workink_link(script_id):
         timeout=10
     )
 
-    data = response.json()
-
+    data = r.json()
     if data.get("error"):
-        raise RuntimeError(f"Work.ink error: {data}")
+        raise RuntimeError(data)
 
     return data["response"]["url"]
 
-def validate_workink_token(token, user_ip):
-    response = requests.get(
-        WORKINK_VALIDATE_URL.format(token),
-        timeout=10
-    )
-
-    data = response.json()
+def validate_workink_token(token, ip):
+    r = requests.get(WORKINK_VALIDATE_URL.format(token), timeout=10)
+    data = r.json()
 
     if not data.get("valid"):
         return False
 
     info = data.get("info") or {}
-    if info.get("byIp") != user_ip:
-        return False
-
-    return True
+    return info.get("byIp") == ip
 
 # ==========================================================
-# STORAGE (KEEP FIELD NAME = script)
+# STORAGE (UNCHANGED FIELD NAMES)
 # ==========================================================
-def save_script(script_id, script_text, internal_token, workink_url):
+def save_script(script_id, script_text, token, workink):
     db.collection(SCRIPTS_COLLECTION).document(script_id).set({
-        "script": script_text,  # <-- DO NOT CHANGE THIS
-        "token": internal_token,
-        "workink": workink_url,
+        "script": script_text,   # KEEP THIS
+        "token": token,
+        "workink": workink,
         "created_at": int(time.time())
     })
 
@@ -148,32 +131,30 @@ def upload():
         return jsonify({"error": "INVALID_SCRIPT"}), 400
 
     script_id = gen_script_id()
-    internal_token = gen_internal_token()
+    token = gen_internal_token()
 
-    workink_url = create_workink_link(script_id)
-
-    save_script(script_id, script_text, internal_token, workink_url)
+    workink = create_workink_link(script_id)
+    save_script(script_id, script_text, token, workink)
 
     return jsonify({
         "success": True,
         "script_id": script_id,
         "loader": f"https://luadec.net/loader/{script_id}.lua",
-        "workink": workink_url
+        "workink": workink
     })
 
 # ==========================================================
-# WORK.INK CALLBACK (ISSUE KEY)
+# WORK.INK CALLBACK → ISSUE KEY
 # ==========================================================
 @app.route("/workink/consume")
 def workink_consume():
     token = request.args.get("token")
     script_id = request.args.get("script_id")
-    user_ip = request.remote_addr
 
     if not token or not script_id:
         return Response("Invalid request", 400)
 
-    if not validate_workink_token(token, user_ip):
+    if not validate_workink_token(token, request.remote_addr):
         return Response("Invalid token", 403)
 
     key = gen_key()
@@ -190,57 +171,52 @@ def workink_consume():
     )
 
 # ==========================================================
-# API: VERIFY KEY
+# VERIFY (GET-ONLY, EXECUTOR SAFE)
 # ==========================================================
-@app.route("/api/verify-key", methods=["POST"])
-def verify_key():
-    body = request.get_json(silent=True) or {}
-    key = body.get("key")
-    script_id = body.get("script_id")
+@app.route("/verify/<script_id>")
+def verify(script_id):
+    key = request.args.get("key")
+    if not key:
+        return Response("error('Missing key')", mimetype="text/plain")
 
-    if not key or not script_id:
-        return jsonify({"success": False}), 400
+    script = get_script(script_id)
+    if not script:
+        return Response("error('Script not found')", mimetype="text/plain")
 
-    doc = db.collection(KEYS_COLLECTION).document(key).get()
-    if not doc.exists:
-        return jsonify({"success": False}), 403
+    key_doc = db.collection(KEYS_COLLECTION).document(key).get()
+    if not key_doc.exists:
+        return Response("error('Invalid key')", mimetype="text/plain")
 
-    data = doc.to_dict()
+    data = key_doc.to_dict()
     if not data.get("active") or data.get("script_id") != script_id:
-        return jsonify({"success": False}), 403
+        return Response("error('Key not valid')", mimetype="text/plain")
 
-    return jsonify({
-        "success": True,
-        "loader": f"https://luadec.net/signed/{script_id}"
-    })
+    return Response(
+        f'loadstring(game:HttpGet("https://luadec.net/signed/{script_id}"))()',
+        mimetype="text/plain"
+    )
 
 # ==========================================================
-# LUA LOADER
+# LOADER (NO POST, NO JSON)
 # ==========================================================
 @app.route("/loader/<script_id>.lua")
-def lua_loader(script_id):
+def loader(script_id):
     script = get_script(script_id)
     if not script:
         return Response("Not found", 404)
 
     lua = f'''
 local SCRIPT_ID = "{script_id}"
-local VERIFY_API = "https://luadec.net/api/verify-key"
 local KEY_LINK = "{script["workink"]}"
-
-local HttpService = game:GetService("HttpService")
 
 local Fluent = loadstring(game:HttpGet(
 "https://raw.githubusercontent.com/dawid-scripts/Fluent/master/main.lua"
 ))()
 
-if not Fluent then error("Fluent failed to load") end
-
 local Window = Fluent:CreateWindow({{
     Title = "Lume Key System",
     SubTitle = "Complete the link to get a key",
     Size = UDim2.fromOffset(420,240),
-    Acrylic = true,
     Theme = "Dark"
 }})
 
@@ -253,32 +229,22 @@ Tab:AddButton({{
     end
 }})
 
-local entered = ""
+local key = ""
 
-Tab:AddInput("KeyInput", {{
+Tab:AddInput("Key", {{
     Title = "Enter Key",
     Callback = function(v)
-        entered = v
+        key = v
     end
 }})
 
 Tab:AddButton({{
-    Title = "Verify & Load",
+    Title = "Verify",
     Callback = function()
-        local res = game:HttpPost(
-            VERIFY_API,
-            HttpService:JSONEncode({{
-                key = entered,
-                script_id = SCRIPT_ID
-            }})
+        local code = game:HttpGet(
+            "https://luadec.net/verify/" .. SCRIPT_ID .. "?key=" .. key
         )
-
-        local data = HttpService:JSONDecode(res)
-
-        if data.success then
-            Window:Destroy()
-            loadstring(game:HttpGet(data.loader))()
-        end
+        loadstring(code)()
     end
 }})
 '''
@@ -311,7 +277,7 @@ def signed(script_id):
     )
 
 # ==========================================================
-# RAW (USES script FIELD — NO CHANGES)
+# RAW
 # ==========================================================
 @app.route("/raw/<script_id>")
 def raw(script_id):
@@ -334,7 +300,7 @@ def raw(script_id):
     except ValueError:
         return Response("Forbidden", 403)
 
-    if abs(time.time() - ts) > SIGNED_TTL_SECONDS:
+    if abs(time.time() - ts) > SIGNED_TTL:
         return Response("Expired", 403)
 
     expected = hmac.new(
@@ -346,7 +312,7 @@ def raw(script_id):
     if not hmac.compare_digest(expected, sig):
         return Response("Forbidden", 403)
 
-    if not is_roblox_request(request):
+    if not is_roblox(request):
         return Response("Forbidden", 403)
 
     return Response(script["script"], mimetype="text/plain")
@@ -355,5 +321,4 @@ def raw(script_id):
 # START
 # ==========================================================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
