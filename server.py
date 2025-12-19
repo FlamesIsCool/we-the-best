@@ -1,6 +1,22 @@
 from flask import Flask, request, Response, jsonify, send_from_directory
 from flask_cors import CORS
-import secrets, hmac, hashlib, time, os, json, requests
+import secrets, hmac, hashlib, time, os, json, requests, sys
+
+# ===============================
+# SAFE ENV LOADING
+# ===============================
+SECRET_KEY_RAW = os.environ.get("LUADEC_SECRET_KEY")
+LOOTLABS_API_KEY = os.environ.get("LOOTLABS_API_KEY")
+FIREBASE_JSON = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
+
+if not SECRET_KEY_RAW:
+    raise RuntimeError("LUADEC_SECRET_KEY missing")
+if not LOOTLABS_API_KEY:
+    raise RuntimeError("LOOTLABS_API_KEY missing")
+if not FIREBASE_JSON:
+    raise RuntimeError("FIREBASE_SERVICE_ACCOUNT missing")
+
+SECRET_KEY = SECRET_KEY_RAW.encode()
 
 # ===============================
 # FIREBASE
@@ -8,12 +24,8 @@ import secrets, hmac, hashlib, time, os, json, requests
 import firebase_admin
 from firebase_admin import credentials, firestore
 
-if not firebase_admin._apps:
-    cred = credentials.Certificate(
-        json.loads(os.environ["FIREBASE_SERVICE_ACCOUNT"])
-    )
-    firebase_admin.initialize_app(cred)
-
+cred = credentials.Certificate(json.loads(FIREBASE_JSON))
+firebase_admin.initialize_app(cred)
 db = firestore.client()
 
 # ===============================
@@ -23,10 +35,30 @@ app = Flask(__name__)
 CORS(app)
 
 # ===============================
-# ENV
+# ANTI-BYPASS HELPERS
 # ===============================
-SECRET_KEY = os.environ["LUADEC_SECRET_KEY"].encode()
-LOOTLABS_API_KEY = os.environ["LOOTLABS_API_KEY"]
+BLOCKED_AGENTS = [
+    "curl", "wget", "python", "requests",
+    "httpx", "aiohttp", "node",
+    "powershell", "cmd", "postman"
+]
+
+def roblox_only(req):
+    ua = (req.headers.get("User-Agent") or "").lower()
+
+    if not ua.startswith("roblox"):
+        return False
+
+    for b in BLOCKED_AGENTS:
+        if b in ua:
+            return False
+
+    return True
+
+def reject_if_not_roblox(req):
+    if not roblox_only(req):
+        return Response("Access denied", 403)
+    return None
 
 # ===============================
 # HELPERS
@@ -43,9 +75,19 @@ def gen_key():
 def hash_key(k: str):
     return hashlib.sha256(k.encode()).hexdigest()
 
-def roblox_only(req):
-    ua = (req.headers.get("User-Agent") or "").lower()
-    return ua.startswith("roblox")
+# ===============================
+# BASIC IP RATE LIMIT (KEY FARM)
+# ===============================
+KEY_RATE_LIMIT = {}
+KEY_WINDOW = 60  # seconds
+
+def allow_key_request(ip):
+    now = time.time()
+    last = KEY_RATE_LIMIT.get(ip, 0)
+    if now - last < KEY_WINDOW:
+        return False
+    KEY_RATE_LIMIT[ip] = now
+    return True
 
 # ===============================
 # LOOTLABS
@@ -107,16 +149,19 @@ def upload():
 
     return jsonify({
         "success": True,
-        "script_id": script_id,
         "loader": loader,
         "lootlabs": loot_url
     })
 
 # ===============================
-# API: VERIFY KEY
+# API: VERIFY KEY (ROBLOX ONLY)
 # ===============================
 @app.route("/api/verify_key", methods=["POST"])
 def verify_key():
+    deny = reject_if_not_roblox(request)
+    if deny:
+        return deny
+
     data = request.get_json(silent=True) or {}
     script_id = data.get("script_id")
     key = data.get("key")
@@ -129,35 +174,30 @@ def verify_key():
         return jsonify({"success": False})
 
     hashes = doc.to_dict().get("hashes", [])
-    if hash_key(key) not in hashes:
-        return jsonify({"success": False})
-
-    return jsonify({"success": True})
+    return jsonify({"success": hash_key(key) in hashes})
 
 # ===============================
-# KEY PAGE (GENERATES KEY PER USER)
+# KEY PAGE (LOOTLABS REDIRECT)
 # ===============================
 @app.route("/key/<script_id>")
 def key_page(script_id):
-    script_doc = db.collection("scripts").document(script_id).get()
-    if not script_doc.exists:
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr)
+
+    if not allow_key_request(ip):
+        return Response("Rate limited", 429)
+
+    if not db.collection("scripts").document(script_id).get().exists:
         return Response("Invalid link", 404)
 
-    # generate a new key per visit
     raw_key = gen_key()
     key_hash = hash_key(raw_key)
 
-    key_ref = db.collection("keys").document(script_id)
-    key_doc = key_ref.get()
-
-    if key_doc.exists:
-        hashes = key_doc.to_dict().get("hashes", [])
-    else:
-        hashes = []
-
+    ref = db.collection("keys").document(script_id)
+    doc = ref.get()
+    hashes = doc.to_dict().get("hashes", []) if doc.exists else []
     hashes.append(key_hash)
 
-    key_ref.set({
+    ref.set({
         "hashes": hashes,
         "updated_at": int(time.time())
     })
@@ -173,7 +213,7 @@ def key_page(script_id):
 body {{
     background:#0e0e0e;
     color:white;
-    font-family:Inter,Arial,sans-serif;
+    font-family:Arial,sans-serif;
     display:flex;
     align-items:center;
     justify-content:center;
@@ -186,22 +226,17 @@ body {{
     border-radius:16px;
     width:440px;
     text-align:center;
-    box-shadow:0 20px 60px rgba(0,0,0,.6);
-}}
-h1 {{
-    margin-bottom:10px;
 }}
 .key {{
     background:#0b0b0b;
     padding:14px;
     border-radius:10px;
     font-family:monospace;
-    word-break:break-all;
     margin:16px 0;
+    word-break:break-all;
 }}
 button {{
     background:#00aaff;
-    color:black;
     border:none;
     padding:12px 18px;
     border-radius:10px;
@@ -209,21 +244,14 @@ button {{
     font-weight:600;
     margin:6px;
 }}
-button.secondary {{
+.secondary {{
     background:#2a2a2a;
     color:white;
 }}
-button:hover {{
-    opacity:.85;
-}}
-.small {{
-    opacity:.75;
-    font-size:13px;
-}}
 </style>
 <script>
-function copy(text) {{
-    navigator.clipboard.writeText(text);
+function copy(t) {{
+    navigator.clipboard.writeText(t);
     alert("Copied!");
 }}
 </script>
@@ -231,16 +259,10 @@ function copy(text) {{
 <body>
 <div class="box">
 <h1>✅ Key Generated</h1>
-<p class="small">Copy your key and paste it into Roblox.</p>
-
-<div class="key" id="key">{raw_key}</div>
-
+<div class="key">{raw_key}</div>
 <button onclick="copy('{raw_key}')">Copy Key</button>
 <button class="secondary" onclick="copy(`{loader}`)">Copy Loadstring</button>
-
-<p class="small" style="margin-top:16px;">
-You may now return to Roblox.
-</p>
+<p>Return to Roblox and paste the key.</p>
 </div>
 </body>
 </html>
@@ -305,10 +327,14 @@ end)
     return Response(lua, mimetype="text/plain")
 
 # ===============================
-# RAW SCRIPT
+# RAW SCRIPT (LOCKED)
 # ===============================
 @app.route("/raw/<script_id>")
 def raw(script_id):
+    deny = reject_if_not_roblox(request)
+    if deny:
+        return deny
+
     doc = db.collection("scripts").document(script_id).get()
     if not doc.exists:
         return Response("Not found", 404)
@@ -321,6 +347,9 @@ def raw(script_id):
     if token != d["token"]:
         return Response("Forbidden", 403)
 
+    if abs(time.time() - int(ts)) > 10:
+        return Response("Expired", 403)
+
     expected = hmac.new(
         SECRET_KEY,
         f"{script_id}{ts}".encode(),
@@ -330,9 +359,6 @@ def raw(script_id):
     if not hmac.compare_digest(expected, sig):
         return Response("Invalid signature", 403)
 
-    if not roblox_only(request):
-        return Response("Denied", 403)
-
     return Response(d["script"], mimetype="text/plain")
 
 # ===============================
@@ -341,3 +367,11 @@ def raw(script_id):
 @app.route("/")
 def home():
     return send_from_directory(".", "index.html")
+
+# ===============================
+# START
+# ===============================
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    print("LuaDec running on port", port)
+    app.run(host="0.0.0.0", port=port)
